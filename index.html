@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keep Me Honest</title>
+<style>
+  :root{--bg:#0f1115;--card:#181b22;--line:#2a2f3a;--text:#e8eaf0;--mute:#8b93a7;--green:#3ecf8e;--amber:#f5b942;--red:#ef5d5d;--blue:#5b8def}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  main{max-width:860px;margin:0 auto;padding:16px}
+  h1{font-size:22px;margin:0}
+  h2{font-size:16px;margin:0 0 10px}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .between{justify-content:space-between}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  input,select,button{font:inherit;color:var(--text);background:#0f1115;border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+  input{flex:1;min-width:120px}
+  button{cursor:pointer;background:var(--blue);border-color:var(--blue);color:#fff}
+  button.ghost{background:transparent;border-color:var(--line);color:var(--text)}
+  button:disabled{opacity:.5;cursor:default}
+  .days{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin:10px 0}
+  .day{padding:8px 2px;text-align:center;font-size:12px;background:var(--card);border:1px solid var(--line);color:var(--text)}
+  .day b{display:block;font-size:15px}
+  .day.sel{border-color:var(--blue);background:#1d2a4a}
+  .day.today b{color:var(--green)}
+  .bar{height:12px;background:#0f1115;border:1px solid var(--line);border-radius:99px;overflow:hidden}
+  .fill{height:100%;background:var(--green);transition:width .3s}
+  .mute{color:var(--mute);font-size:13px}
+  .task{border-top:1px solid var(--line);padding:10px 0}
+  .task:first-of-type{border-top:0}
+  .badge{font-size:12px;padding:2px 8px;border-radius:99px;border:1px solid}
+  .pending{color:var(--red)} .partial{color:var(--amber)} .done{color:var(--green)}
+  .cm{margin:6px 0 0 12px;padding-left:10px;border-left:2px solid var(--line);font-size:13px}
+  .err{color:var(--red);min-height:1.2em;font-size:13px}
+  .hide{display:none}
+</style>
+</head>
+<body>
+<main>
+  <!-- LOGIN -->
+  <div id="fatal" class="err" style="font-size:15px;white-space:pre-wrap"></div>
+  <section id="auth" class="card">
+    <h1>Keep Me Honest</h1>
+    <p class="mute">Sign in or create an account to join the group.</p>
+    <div class="row" style="margin-bottom:8px"><input id="name" placeholder="Your name (sign up only)"></div>
+    <div class="row" style="margin-bottom:8px"><input id="email" type="email" placeholder="Email"></div>
+    <div class="row" style="margin-bottom:8px"><input id="pass" type="password" placeholder="Password (6+ characters)"></div>
+    <div class="row"><button id="btnIn">Sign in</button><button id="btnUp" class="ghost">Sign up</button></div>
+    <div id="authErr" class="err"></div>
+  </section>
+
+  <!-- APP -->
+  <section id="app" class="hide">
+    <div class="row between">
+      <h1>Keep Me Honest</h1>
+      <div class="row"><span id="who" class="mute"></span><button id="btnOut" class="ghost">Sign out</button></div>
+    </div>
+
+    <div class="row between" style="margin-top:12px">
+      <button id="prev" class="ghost">&lsaquo; Prev week</button>
+      <strong id="weekLabel"></strong>
+      <div class="row"><button id="today" class="ghost">Today</button><button id="next" class="ghost">Next week &rsaquo;</button></div>
+    </div>
+    <div id="days" class="days"></div>
+
+    <div class="card">
+      <h2>Weekly penalty <span class="mute">(pending = 100, partial = 50; only counts days up to today)</span></h2>
+      <div id="penalties"></div>
+    </div>
+
+    <h2 id="dayTitle"></h2>
+    <div id="lists"></div>
+    <div id="appErr" class="err"></div>
+  </section>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+// ====== 1. PASTE YOUR SUPABASE VALUES HERE (Project Settings -> API) ======
+const SUPABASE_URL = "https://yyiqjfkxvwmvtpzbzttd.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_Yd_0W5km0T_CRNiVg-5gAg_gNB03Mod";
+const BAR_FULL_AT = 700; // penalty points that fill the bar completely
+// =========================================================================
+
+// Show any crash on screen instead of a blank page
+window.addEventListener("error", e => { document.getElementById("fatal").textContent = "Error: " + e.message; });
+window.addEventListener("unhandledrejection", e => { document.getElementById("fatal").textContent = "Error: " + (e.reason && e.reason.message || e.reason); });
+
+if (typeof supabase === "undefined") {
+  document.getElementById("fatal").textContent = "Could not load Supabase library. Check your internet connection or ad-blocker.";
+} else if (SUPABASE_URL.startsWith("PASTE") || SUPABASE_ANON_KEY.startsWith("PASTE")) {
+  document.getElementById("fatal").textContent = "Open index.html in a text editor and paste your Supabase URL and key near the top of the script.";
+} else if (!/^https:\/\/.+\.supabase\.co\/?$/.test(SUPABASE_URL.trim())) {
+  document.getElementById("fatal").textContent = "SUPABASE_URL looks wrong. It should look like https://abcdxyz.supabase.co (no /rest/v1, no spaces).";
+}
+const db = supabase.createClient(SUPABASE_URL.trim(), SUPABASE_ANON_KEY.trim());
+const $ = id => document.getElementById(id);
+const PTS = { pending: 100, partial: 50, done: 0 };
+const LABEL = { pending: "Pending", partial: "Partially done", done: "Completed" };
+
+let me = null, profiles = [], weekTasks = [], comments = [];
+let selected = ymd(new Date());
+let weekStart = mondayOf(selected);
+
+function ymd(d){ const p=n=>String(n).padStart(2,"0"); return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate()); }
+function parse(s){ const [y,m,d]=s.split("-").map(Number); return new Date(y,m-1,d); }
+function addDays(s,n){ const d=parse(s); d.setDate(d.getDate()+n); return ymd(d); }
+function mondayOf(s){ const d=parse(s); const wd=(d.getDay()+6)%7; d.setDate(d.getDate()-wd); return ymd(d); }
+function el(tag, props={}, ...kids){
+  const e=document.createElement(tag);
+  for(const k in props){ if(k==="class") e.className=props[k]; else if(k.startsWith("on")) e.addEventListener(k.slice(2),props[k]); else e[k]=props[k]; }
+  kids.flat().forEach(c=>e.append(c));
+  return e;
+}
+const todayStr = () => ymd(new Date());
+const nameOf = id => (profiles.find(p=>p.id===id)||{name:"?"}).name;
+
+// ---------- auth ----------
+async function boot(){
+  const { data:{ session } } = await db.auth.getSession();
+  if(session) await start(session.user); else show("auth");
+  db.auth.onAuthStateChange((_e, s)=>{ if(!s) show("auth"); });
+}
+function show(which){ $("auth").classList.toggle("hide", which!=="auth"); $("app").classList.toggle("hide", which!=="app"); }
+
+$("btnIn").onclick = async ()=>{
+  $("authErr").textContent="";
+  const { data, error } = await db.auth.signInWithPassword({ email:$("email").value.trim(), password:$("pass").value });
+  if(error) return $("authErr").textContent=error.message;
+  start(data.user);
+};
+$("btnUp").onclick = async ()=>{
+  $("authErr").textContent="";
+  const name = $("name").value.trim();
+  if(!name) return $("authErr").textContent="Enter your name to sign up.";
+  const { data, error } = await db.auth.signUp({ email:$("email").value.trim(), password:$("pass").value, options:{ data:{ name } } });
+  if(error) return $("authErr").textContent=error.message;
+  if(!data.session) return $("authErr").textContent="Account created. Check your email to confirm, then sign in.";
+  start(data.user);
+};
+$("btnOut").onclick = ()=>db.auth.signOut();
+
+async function start(user){
+  me = user; show("app");
+  await load();
+  setInterval(load, 30000); // refresh every 30s so you see others' changes
+}
+
+// ---------- data ----------
+async function load(){
+  const end = addDays(weekStart,6);
+  const [p,t] = await Promise.all([
+    db.from("profiles").select("id,name").order("name"),
+    db.from("tasks").select("*").gte("task_date",weekStart).lte("task_date",end).order("created_at")
+  ]);
+  if(p.error||t.error) return $("appErr").textContent=(p.error||t.error).message;
+  profiles=p.data; weekTasks=t.data;
+  const ids = weekTasks.map(x=>x.id);
+  comments = [];
+  if(ids.length){
+    const c = await db.from("comments").select("*").in("task_id",ids).order("created_at");
+    if(!c.error) comments=c.data;
+  }
+  $("appErr").textContent="";
+  render();
+}
+
+// ---------- render ----------
+function render(){
+  $("who").textContent = nameOf(me.id);
+  const end = addDays(weekStart,6);
+  $("weekLabel").textContent = parse(weekStart).toLocaleDateString(undefined,{day:"numeric",month:"short"})+" – "+parse(end).toLocaleDateString(undefined,{day:"numeric",month:"short",year:"numeric"});
+
+  // day strip
+  const strip=$("days"); strip.replaceChildren();
+  for(let i=0;i<7;i++){
+    const d=addDays(weekStart,i);
+    const dt=parse(d);
+    strip.append(el("button",{class:"day"+(d===selected?" sel":"")+(d===todayStr()?" today":""),onclick:()=>{selected=d;render();}},
+      dt.toLocaleDateString(undefined,{weekday:"short"}), el("b",{},String(dt.getDate()))));
+  }
+
+  // penalties: only days <= today count
+  const pen=$("penalties"); pen.replaceChildren();
+  profiles.forEach(p=>{
+    const pts = weekTasks.filter(t=>t.user_id===p.id && t.task_date<=todayStr()).reduce((s,t)=>s+PTS[t.status],0);
+    const pct = Math.min(100, pts/BAR_FULL_AT*100);
+    const color = pct<35?"var(--green)":pct<70?"var(--amber)":"var(--red)";
+    const fill = el("div",{class:"fill"}); fill.style.width=pct+"%"; fill.style.background=color;
+    pen.append(el("div",{style:"margin:8px 0"},
+      el("div",{class:"row between"}, el("span",{}, p.name+(p.id===me.id?" (you)":"")), el("strong",{},pts+" pts")),
+      el("div",{class:"bar"},fill)));
+  });
+
+  // day lists: me first
+  $("dayTitle").textContent = parse(selected).toLocaleDateString(undefined,{weekday:"long",day:"numeric",month:"long"})+(selected>todayStr()?" (upcoming)":"");
+  const lists=$("lists"); lists.replaceChildren();
+  const ordered=[...profiles].sort((a,b)=>(b.id===me.id)-(a.id===me.id));
+  ordered.forEach(p=>lists.append(listCard(p)));
+}
+
+function listCard(p){
+  const mine = p.id===me.id;
+  const tasks = weekTasks.filter(t=>t.user_id===p.id && t.task_date===selected);
+  const card = el("div",{class:"card"}, el("h2",{}, mine?"Your list":p.name+"'s list"));
+  if(!tasks.length) card.append(el("div",{class:"mute"},"No tasks for this day."));
+  tasks.forEach(t=>card.append(taskRow(t,mine)));
+  if(mine) card.append(addForm());
+  return card;
+}
+
+function taskRow(t,mine){
+  const row = el("div",{class:"task"});
+  const top = el("div",{class:"row between"}, el("span",{},t.title));
+  if(mine){
+    const sel = el("select",{onchange:async e=>{
+      const { error } = await db.from("tasks").update({status:e.target.value}).eq("id",t.id);
+      if(error) $("appErr").textContent=error.message; load();
+    }});
+    Object.keys(LABEL).forEach(k=>{ const o=el("option",{value:k},LABEL[k]); if(k===t.status) o.selected=true; sel.append(o); });
+    top.append(sel);
+  } else {
+    top.append(el("span",{class:"badge "+t.status},LABEL[t.status]));
+  }
+  row.append(top);
+  comments.filter(c=>c.task_id===t.id).forEach(c=>
+    row.append(el("div",{class:"cm"}, el("b",{},nameOf(c.user_id)+": "), c.body)));
+  const input = el("input",{placeholder:"Add a comment…",maxLength:500});
+  const post = async ()=>{
+    const body=input.value.trim(); if(!body) return;
+    const { error } = await db.from("comments").insert({task_id:t.id,user_id:me.id,body});
+    if(error) $("appErr").textContent=error.message; else load();
+  };
+  input.addEventListener("keydown",e=>{ if(e.key==="Enter") post(); });
+  row.append(el("div",{class:"row",style:"margin-top:6px"}, input, el("button",{class:"ghost",onclick:post},"Post")));
+  return row;
+}
+
+function addForm(){
+  const title = el("input",{placeholder:"New task…",maxLength:200});
+  const date = el("input",{type:"date",value:selected<todayStr()?todayStr():selected,min:todayStr(),style:"flex:0 0 auto"});
+  const go = async ()=>{
+    const t=title.value.trim(); if(!t||!date.value) return;
+    const { error } = await db.from("tasks").insert({user_id:me.id,task_date:date.value,title:t});
+    if(error) return $("appErr").textContent=error.message;
+    title.value=""; selected=date.value; weekStart=mondayOf(selected); load();
+  };
+  title.addEventListener("keydown",e=>{ if(e.key==="Enter") go(); });
+  return el("div",{class:"row",style:"margin-top:12px"}, title, date, el("button",{onclick:go},"Add task"));
+}
+
+// ---------- week nav ----------
+$("prev").onclick=()=>{ weekStart=addDays(weekStart,-7); selected=weekStart; load(); };
+$("next").onclick=()=>{ weekStart=addDays(weekStart,7);  selected=weekStart; load(); };
+$("today").onclick=()=>{ selected=todayStr(); weekStart=mondayOf(selected); load(); };
+
+boot();
+</script>
+</body>
+</html>
